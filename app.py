@@ -1,35 +1,44 @@
 from fastapi import FastAPI
-from googleapiclient.discovery import build
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import requests
 from transformers import pipeline
-from nltk.tokenize import word_tokenize
-from wordcloud import WordCloud
-import matplotlib.pyplot as plt
-import re
+from googleapiclient.discovery import build
 import nltk
-from typing import List, Dict
-import io
-import base64
+import re
 
+# Download necessary NLTK data
 nltk.download('punkt')
 
-API_KEY = "AIzaSyANE1eR9kDd0Ng04w5rf3l5635vkTyyqa8"
-YOUTUBE_API_SERVICE_NAME = "youtube"
-YOUTUBE_API_VERSION = "v3"
-youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, developerKey=API_KEY)
-
+# Initialize FastAPI app
 app = FastAPI()
+
+# Configure CORS to allow requests from all origins (or specify your extension's origin)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Or specify your Chrome extension's URL, e.g. ["chrome-extension://your-extension-id"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Initialize Hugging Face sentiment analysis pipeline
 sentiment_analyzer = pipeline("sentiment-analysis")
 
-def clean_text(text: str) -> str:
-    """ Clean text by removing links and extra spaces """
+# YouTube API setup
+API_KEY = "AIzaSyANE1eR9kDd0Ng04w5rf3l5635vkTyyqa8"  # Replace with your API key
+YOUTUBE_API_SERVICE_NAME = "youtube"
+YOUTUBE_API_VERSION = "v3"
+youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, developerKey=API_KEY)
+
+# Helper function to clean the comments
+def clean_text(text):
     text = re.sub(r"http\S+|www\S+|https\S+", "", text, flags=re.MULTILINE)
     text = re.sub(r'\s+', ' ', text).strip()  # Remove extra spaces
     return text
 
-def fetch_comments(video_id: str, max_results: int = 100) -> List[str]:
-    """ Fetch comments from YouTube """
+# Helper function to fetch comments
+def fetch_comments(video_id, max_results=100):
     comments = []
     try:
         response = youtube.commentThreads().list(
@@ -46,15 +55,17 @@ def fetch_comments(video_id: str, max_results: int = 100) -> List[str]:
         print(f"Error fetching comments: {e}")
     return comments
 
-def analyze_comments(comments: List[str]) -> Dict:
-    """ Perform sentiment analysis on comments """
+# Helper function to analyze sentiments
+def analyze_comments(comments):
     total_sentiments = {"positive": 0, "negative": 0, "neutral": 0}
     sentiment_scores = []
+    sentiments = []
 
     for comment in comments:
         result = sentiment_analyzer(comment)[0]
+        sentiments.append(result)
         sentiment_scores.append(result['score'])
-        
+
         if result["label"] == "POSITIVE":
             total_sentiments["positive"] += 1
         elif result["label"] == "NEGATIVE":
@@ -63,39 +74,40 @@ def analyze_comments(comments: List[str]) -> Dict:
             total_sentiments["neutral"] += 1
 
     avg_sentiment_score = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
-    return total_sentiments, avg_sentiment_score
+    return sentiments, total_sentiments, avg_sentiment_score
 
-def generate_word_cloud(comments: List[str]) -> str:
-    """ Generate a word cloud image and return it as base64 """
-    all_words = " ".join(comments)
-    wordcloud = WordCloud(width=800, height=400, background_color="white").generate(all_words)
-    
-    # Save image to a BytesIO object
-    img_io = io.BytesIO()
-    wordcloud.to_image().save(img_io, format='PNG')
-    img_io.seek(0)
-    
-    # Convert image to base64
-    img_base64 = base64.b64encode(img_io.getvalue()).decode('utf-8')
-    return img_base64
-
-@app.get("/analyze/{video_id}")
-async def analyze_video(video_id: str, max_results: int = 100):
-    """ Analyze YouTube video comments and provide sentiment and word cloud """
-    comments = fetch_comments(video_id, max_results)
-    if not comments:
-        return {"message": "No comments found or failed to fetch comments."}
-
-    # Analyze sentiments
-    sentiments, avg_sentiment_score = analyze_comments(comments)
-    
-    # Generate word cloud image
-    word_cloud_image = generate_word_cloud(comments)
-    
-    # Return results
+# Helper function to calculate metrics
+def calculate_metrics(comments):
+    unique_comments = set(comments)
+    total_length = sum(len(comment) for comment in comments)
+    avg_length = total_length / len(comments) if comments else 0
     return {
         "total_comments": len(comments),
-        "sentiments": sentiments,
-        "average_sentiment_score": avg_sentiment_score,
-        "word_cloud_image": word_cloud_image
+        "unique_comments": len(unique_comments),
+        "avg_length": avg_length
+    }
+
+# API endpoint to analyze video comments
+@app.get("/analyze/{video_id}")
+async def analyze_video(video_id: str):
+    comments = fetch_comments(video_id, max_results=100)
+    
+    if not comments:
+        return {"message": "No comments found or failed to fetch comments."}
+    
+    # Calculate metrics
+    metrics = calculate_metrics(comments)
+
+    # Sentiment analysis
+    sentiments, sentiment_counts, avg_sentiment_score = analyze_comments(comments)
+
+    # Return analysis results
+    return {
+        "message": "Analysis complete",
+        "video_id": video_id,
+        "total_comments": metrics["total_comments"],
+        "unique_comments": metrics["unique_comments"],
+        "avg_length": metrics["avg_length"],
+        "sentiment_analysis": sentiment_counts,
+        "avg_sentiment_score": avg_sentiment_score,
     }

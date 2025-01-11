@@ -1,1 +1,8 @@
-pip install fastapi uvicorn transformers google-api-python-client nltk wordcloud matplotlib
+fastapi
+uvicorn
+transformers
+google-api-python-client
+nltk
+wordcloud
+matplotlib
+
